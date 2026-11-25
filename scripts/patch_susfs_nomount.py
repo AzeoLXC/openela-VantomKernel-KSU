@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 import os
 import sys
-import shutil
 import argparse
 import subprocess
 
@@ -93,236 +92,30 @@ def main():
         log("Added nomount to fs/Kconfig")
 
     # ----------------------------------------------------
-    # 3. Setup SuSFS 4.14
+    # 3. Apply the NonGKI 4.14 SuSFS core patch. This supplies the per-thread
+    # no-su helpers required by BakaSU's SUSFS inline hooks.
     # ----------------------------------------------------
-    log("Setting up SuSFS 4.14...")
-    susfs_repo = os.path.join(kernel_dir, "susfs4ksu")
-    if not os.path.exists(susfs_repo):
-        ok, out = run_cmd("git clone --depth=1 -b kernel-4.14 https://gitlab.com/simonpunk/susfs4ksu.git susfs4ksu")
-        if not ok:
-            log("Failed to clone susfs4ksu")
-            return 1
+    log("Applying the NonGKI kernel-4.14 SuSFS patch...")
+    susfs_patch = "/tmp/susfs_patch_to_4.14.patch"
+    patch_url = "https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/Patch/susfs_patch_to_4.14.patch"
+    ok, out = run_cmd(f"curl -fsSL {patch_url} -o {susfs_patch}")
+    if not ok:
+        log("Failed to download the NonGKI SuSFS patch")
+        return 1
+    ok, out = run_cmd(f"patch -p1 -N -s < {susfs_patch}")
+    if not ok:
+        log("SuSFS patch had unapplied hunks; continuing with its successful hunks and compatibility fixes")
 
-    # Copy fs files
-    susfs_fs = os.path.join(susfs_repo, "kernel_patches", "fs")
-    for f in os.listdir(susfs_fs):
-        src = os.path.join(susfs_fs, f)
-        dst = os.path.join(kernel_dir, "fs", f)
-        shutil.copy2(src, dst)
-        log(f"Copied fs/{f}")
-
-    # Copy include files
-    susfs_inc = os.path.join(susfs_repo, "kernel_patches", "include", "linux")
-    for f in os.listdir(susfs_inc):
-        src = os.path.join(susfs_inc, f)
-        dst = os.path.join(kernel_dir, "include", "linux", f)
-        shutil.copy2(src, dst)
-        log(f"Copied include/linux/{f}")
-
-    # Apply 50_add_susfs_in_kernel-4.14.patch
-    patch_file = os.path.join(susfs_repo, "kernel_patches", "50_add_susfs_in_kernel-4.14.patch")
-    log(f"Applying SuSFS patch: {patch_file}")
-    run_cmd(f"patch -p1 -N -s < {patch_file}")
-
-    # 1. Compatibility extensions for include/linux/susfs_def.h
-    susfs_def_header = os.path.join(kernel_dir, "include", "linux", "susfs_def.h")
-    if os.path.exists(susfs_def_header):
-        with open(susfs_def_header, "r") as f:
-            def_text = f.read()
-        compat_def_ext = """
-/* Compatibility extensions for BakaSU SUSFS integration */
-#ifndef SUSFS_MAGIC
-#define SUSFS_MAGIC 0xFAFAFAFA
-#endif
-#ifndef CMD_SUSFS_ADD_SUS_PATH_LOOP
-#define CMD_SUSFS_ADD_SUS_PATH_LOOP 0x55551
-#endif
-#ifndef CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS
-#define CMD_SUSFS_HIDE_SUS_MNTS_FOR_NON_SU_PROCS 0x55561
-#endif
-#ifndef CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING
-#define CMD_SUSFS_ENABLE_AVC_LOG_SPOOFING 0x555c1
-#endif
-#ifndef CMD_SUSFS_ADD_SUS_MAP
-#define CMD_SUSFS_ADD_SUS_MAP 0x555c2
-#endif
-
-#ifndef TASK_STRUCT_PROC_UMOUNTED
-#define TASK_STRUCT_PROC_UMOUNTED BIT(25)
-#endif
-
-#include <linux/sched.h>
-
-static inline void susfs_set_current_proc_umounted(void) {
-#if defined(CONFIG_KSU_SUSFS)
-	current->susfs_task_state |= TASK_STRUCT_PROC_UMOUNTED;
-#endif
-}
-
-static inline bool susfs_is_current_proc_umounted(void) {
-#if defined(CONFIG_KSU_SUSFS)
-	return !!(current->susfs_task_state & TASK_STRUCT_PROC_UMOUNTED);
-#else
-	return false;
-#endif
-}
-"""
-        if "susfs_set_current_proc_umounted" not in def_text:
-            idx = def_text.rfind("#endif")
-            if idx != -1:
-                def_text = def_text[:idx] + compat_def_ext + "\n#endif\n"
-            else:
-                def_text += compat_def_ext
-            with open(susfs_def_header, "w") as f:
-                f.write(def_text)
-            log("Appended SuSFS compatibility extensions to include/linux/susfs_def.h")
-
-    # 2. Compatibility extensions for include/linux/susfs.h
-    susfs_header = os.path.join(kernel_dir, "include", "linux", "susfs.h")
-    if os.path.exists(susfs_header):
-        with open(susfs_header, "r") as f:
-            h_text = f.read()
-        compat_ext = """
-/* Compatibility extensions for BakaSU SUSFS integration */
-#include <linux/uaccess.h>
-#include <linux/slab.h>
-
-#ifndef SUSFS_MAX_VERSION_BUFSIZE
-#define SUSFS_MAX_VERSION_BUFSIZE 16
-#endif
-#ifndef SUSFS_MAX_VARIANT_BUFSIZE
-#define SUSFS_MAX_VARIANT_BUFSIZE 16
-#endif
-#ifndef SUSFS_ENABLED_FEATURES_SIZE
-#define SUSFS_ENABLED_FEATURES_SIZE 8192
-#endif
-
-struct st_susfs_version_compat {
-	char susfs_version[SUSFS_MAX_VERSION_BUFSIZE];
-	int err;
-};
-
-struct st_susfs_variant_compat {
-	char susfs_variant[SUSFS_MAX_VARIANT_BUFSIZE];
-	int err;
-};
-
-struct st_susfs_enabled_features_compat {
-	char enabled_features[SUSFS_ENABLED_FEATURES_SIZE];
-	int err;
-};
-
-static inline void susfs_show_version(void __user *arg) {
-	struct st_susfs_version_compat info;
-	if (!arg)
-		return;
-	memset(&info, 0, sizeof(info));
-	strncpy(info.susfs_version, SUSFS_VERSION, sizeof(info.susfs_version) - 1);
-	info.err = 0;
-	if (copy_to_user(arg, &info, sizeof(info)))
-		pr_err("susfs_show_version: copy_to_user failed\\n");
-}
-
-static inline void susfs_show_variant(void __user *arg) {
-	struct st_susfs_variant_compat info;
-	if (!arg)
-		return;
-	memset(&info, 0, sizeof(info));
-	strncpy(info.susfs_variant, "SUSFS_4.14", sizeof(info.susfs_variant) - 1);
-	info.err = 0;
-	if (copy_to_user(arg, &info, sizeof(info)))
-		pr_err("susfs_show_variant: copy_to_user failed\\n");
-}
-
-static inline void susfs_get_enabled_features(void __user *arg) {
-	struct st_susfs_enabled_features_compat *info;
-	if (!arg)
-		return;
-	info = kzalloc(sizeof(*info), GFP_ATOMIC);
-	if (!info)
-		return;
-	snprintf(info->enabled_features, sizeof(info->enabled_features),
-#ifdef CONFIG_KSU_SUSFS_SUS_PATH
-		"CONFIG_KSU_SUSFS_SUS_PATH\\n"
-#endif
-#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-		"CONFIG_KSU_SUSFS_SUS_MOUNT\\n"
-#endif
-#ifdef CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT
-		"CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT\\n"
-#endif
-#ifdef CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT
-		"CONFIG_KSU_SUSFS_AUTO_ADD_SUS_BIND_MOUNT\\n"
-#endif
-#ifdef CONFIG_KSU_SUSFS_SUS_KSTAT
-		"CONFIG_KSU_SUSFS_SUS_KSTAT\\n"
-#endif
-#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT
-		"CONFIG_KSU_SUSFS_TRY_UMOUNT\\n"
-#endif
-#ifdef CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT
-		"CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT\\n"
-#endif
-#ifdef CONFIG_KSU_SUSFS_SPOOF_UNAME
-		"CONFIG_KSU_SUSFS_SPOOF_UNAME\\n"
-#endif
-#ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
-		"CONFIG_KSU_SUSFS_ENABLE_LOG\\n"
-#endif
-#ifdef CONFIG_KSU_SUSFS_OPEN_REDIRECT
-		"CONFIG_KSU_SUSFS_OPEN_REDIRECT\\n"
-#endif
-		"CONFIG_KSU_SUSFS\\n"
-	);
-	info->err = 0;
-	if (copy_to_user(arg, info, sizeof(*info)))
-		pr_err("susfs_get_enabled_features: copy_to_user failed\\n");
-	kfree(info);
-}
-
-static inline void susfs_start_sdcard_monitor_fn(void) {}
-static inline void susfs_set_avc_log_spoofing(void __user *arg) {}
-static inline void susfs_add_sus_path_loop(void __user *arg) {}
-static inline void susfs_set_hide_sus_mnts_for_non_su_procs(void __user *arg) {}
-static inline void susfs_add_sus_map(void __user *arg) {}
-static inline void susfs_enable_log(void __user *arg) {}
-"""
-        if "susfs_show_version" not in h_text:
-            idx = h_text.rfind("#endif")
-            if idx != -1:
-                h_text = h_text[:idx] + compat_ext + "\n#endif\n"
-            else:
-                h_text += compat_ext
-            with open(susfs_header, "w") as f:
-                f.write(h_text)
-            log("Appended SuSFS compatibility extensions to include/linux/susfs.h")
-
-    # 3. Patch supercall.c: remove conflicting dummy susfs_try_umount and dereference *arg
-    for sc_candidate in [
-        os.path.join(kernel_dir, "KernelSU", "kernel", "supercall", "supercall.c"),
-        os.path.join(kernel_dir, "drivers", "kernelsu", "supercall", "supercall.c")
-    ]:
-        if os.path.exists(sc_candidate):
-            with open(sc_candidate, "r") as f:
-                sc_text = f.read()
-            # Remove conflicting dummy definitions (already provided natively by fs/susfs.c)
-            idx1 = sc_text.find("void susfs_try_umount")
-            if idx1 != -1:
-                start = sc_text.rfind("#ifdef CONFIG_KSU_SUSFS_TRY_UMOUNT", 0, idx1)
-                end = sc_text.find("#endif", idx1) + 6
-                sc_text = sc_text[:start] + "/* Handled natively by fs/susfs.c */\n" + sc_text[end:]
-            # Dereference arg to (void __user *)*arg because arg is void __user **arg
-            for fn in [
-                "susfs_add_sus_path", "susfs_add_sus_path_loop", "susfs_set_hide_sus_mnts_for_non_su_procs",
-                "susfs_add_sus_kstat", "susfs_update_sus_kstat", "susfs_add_try_umount",
-                "susfs_set_uname", "susfs_enable_log", "susfs_set_cmdline_or_bootconfig",
-                "susfs_add_open_redirect", "susfs_add_sus_map", "susfs_set_avc_log_spoofing",
-                "susfs_get_enabled_features", "susfs_show_variant", "susfs_show_version"
-            ]:
-                sc_text = sc_text.replace(f"{fn}(arg)", f"{fn}((void __user *)*arg)")
-            with open(sc_candidate, "w") as f:
-                f.write(sc_text)
-            log(f"Patched {sc_candidate} (removed dummy definitions and dereferenced *arg)")
+    susfs_def = os.path.join(kernel_dir, "include", "linux", "susfs_def.h")
+    if not os.path.exists(susfs_def):
+        log("SuSFS patch did not create include/linux/susfs_def.h")
+        return 1
+    with open(susfs_def, "r") as f:
+        susfs_def_text = f.read()
+    if "susfs_is_current_proc_no_su" not in susfs_def_text:
+        log("SuSFS patch did not provide susfs_is_current_proc_no_su required by BakaSU inline hooks")
+        return 1
+    log("Verified BakaSU's susfs_is_current_proc_no_su helper is available")
 
     # 4. Patch kernel_umount.c: bridge ksu_try_umount, susfs_try_umount_all, susfs_run_sus_path_loop
     for um_candidate in [
@@ -376,8 +169,8 @@ void susfs_run_sus_path_loop(void)
         with open(cmdline_path, "r") as f:
             cmd_text = f.read()
         if "susfs_spoof_cmdline_or_bootconfig" not in cmd_text:
-            patch_cmd_hdr = "#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG\nextern int susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);\n#endif\n"
-            patch_cmd_show = "static int cmdline_proc_show(struct seq_file *m, void *v)\n{\n#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG\n\tif (!susfs_spoof_cmdline_or_bootconfig(m)) {\n\t\tseq_putc(m, '\\n');\n\t\treturn 0;\n\t}\n#endif\n"
+            patch_cmd_hdr = "#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG\nextern struct static_key_false susfs_is_fake_cmdline_or_bootconfig_buffer_set;\nextern void susfs_spoof_cmdline_or_bootconfig(struct seq_file *m);\n#endif\n"
+            patch_cmd_show = "static int cmdline_proc_show(struct seq_file *m, void *v)\n{\n#ifdef CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG\n\tif (static_branch_likely(&susfs_is_fake_cmdline_or_bootconfig_buffer_set)) {\n\t\tsusfs_spoof_cmdline_or_bootconfig(m);\n\t\tseq_putc(m, '\\n');\n\t\treturn 0;\n\t}\n#endif\n"
             cmd_text = cmd_text.replace("#include <linux/seq_file.h>", "#include <linux/seq_file.h>\n" + patch_cmd_hdr, 1)
             cmd_text = cmd_text.replace("static int cmdline_proc_show(struct seq_file *m, void *v)\n{", patch_cmd_show, 1)
             with open(cmdline_path, "w") as f:

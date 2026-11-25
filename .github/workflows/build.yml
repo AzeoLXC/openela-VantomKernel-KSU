@@ -90,6 +90,7 @@ jobs:
       - name: Compile Kernel Image
         id: compile
         run: |
+          set -o pipefail
           cd kernel
           export ARCH=arm64
           export SUBARCH=arm64
@@ -136,6 +137,7 @@ jobs:
             CC=clang \
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=$GCC64_PATH/bin/aarch64-elf- \
+            CROSS_COMPILE_COMPAT=$GCC32_PATH/bin/arm-eabi- \
             CROSS_COMPILE_ARM32=$GCC32_PATH/bin/arm-eabi- \
             Image.gz dtbs 2>&1 | tee build.log
 
