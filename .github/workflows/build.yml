@@ -95,6 +95,8 @@ jobs:
           export ARCH=arm64
           export SUBARCH=arm64
           export PATH="$CLANG_PATH/bin:$GCC64_PATH/bin:$GCC32_PATH/bin:$PATH"
+          export CROSS_COMPILE_COMPAT="$GCC32_PATH/bin/arm-eabi-"
+          export CROSS_COMPILE_ARM32="$GCC32_PATH/bin/arm-eabi-"
           export KBUILD_BUILD_USER="azeolxc"
           export KBUILD_BUILD_HOST="PixelOS-sweet"
 
