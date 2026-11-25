@@ -1,17 +1,17 @@
-name: Build KernelSU Next PixelOS sweet
+name: Build BakaSU PixelOS sweet
 
 on:
   workflow_dispatch:
     inputs:
       ksu_branch:
-        description: "KernelSU-Next branch to checkout"
+        description: "BakaSU branch to checkout"
         required: false
-        default: "legacy-susfs"
+        default: "main"
         type: string
       ksu_repo:
-        description: "KernelSU-Next repository"
+        description: "BakaSU repository"
         required: false
-        default: "https://github.com/xtrance-eng/KernelSU-Next.git"
+        default: "https://github.com/Baka-SU/BakaSU.git"
         type: string
 
 permissions:
@@ -29,7 +29,7 @@ jobs:
       - name: Fetch Upstream Metadata
         id: get_meta
         run: |
-          SHA=$(curl -s "https://api.github.com/repos/PixelOS-Devices/android_kernel_xiaomi_sm6150/commits/seventeen" | jq -r '.sha[0:7]')
+          SHA=$(curl -fsSL "https://api.github.com/repos/PixelOS-Devices/android_kernel_xiaomi_sm6150/commits/seventeen" | jq -er '.sha')
           DATE=$(TZ=Asia/Jakarta date '+%Y%m%d_%H%M')
           TAG=$(TZ=Asia/Jakarta date '+%y%m%d.%H%M')
           echo "kernel_head=${SHA}" >> $GITHUB_OUTPUT
@@ -42,7 +42,6 @@ jobs:
     runs-on: ubuntu-22.04
     outputs:
       zip_name: ${{ steps.package.outputs.zip_name }}
-      sha256: ${{ steps.package.outputs.sha256 }}
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -73,16 +72,23 @@ jobs:
         run: |
           git clone --depth=1 -b seventeen https://github.com/PixelOS-Devices/android_kernel_xiaomi_sm6150.git kernel
 
-      - name: Setup KernelSU-Next, SuSFS & NoMount
+      - name: Setup BakaSU, SuSFS & NoMount
         run: |
           cd kernel
-          KSU_TARGET="${{ github.event.inputs.ksu_branch || 'legacy-susfs' }}"
-          KSU_REPO="${{ github.event.inputs.ksu_repo || 'https://github.com/xtrance-eng/KernelSU-Next.git' }}"
+          KSU_TARGET="${{ github.event.inputs.ksu_branch || 'main' }}"
+          KSU_REPO="${{ github.event.inputs.ksu_repo || 'https://github.com/Baka-SU/BakaSU.git' }}"
           python3 ../scripts/patch_susfs_nomount.py \
             --ksu-repo "$KSU_REPO" \
             --ksu-branch "$KSU_TARGET"
 
+          # BakaSU uses SUSFS inline hooks for this 4.14 non-GKI kernel.
+          curl -fsSL \
+            https://raw.githubusercontent.com/JackA1ltman/NonGKI_Kernel_Build_2nd/mainline/Patches/susfs_inline_hook_patches.sh \
+            -o /tmp/susfs_inline_hook_patches.sh
+          bash /tmp/susfs_inline_hook_patches.sh
+
       - name: Compile Kernel Image
+        id: compile
         run: |
           cd kernel
           export ARCH=arm64
@@ -97,7 +103,6 @@ jobs:
             -e CONFIG_KSU \
             -e CONFIG_KPROBES \
             -e CONFIG_KRETPROBES \
-            -e CONFIG_KSU_KPROBES_HOOK \
             -e CONFIG_KSU_SUSFS \
             -e CONFIG_KSU_SUSFS_SUS_PATH \
             -e CONFIG_KSU_SUSFS_SUS_MOUNT \
@@ -132,12 +137,26 @@ jobs:
             CLANG_TRIPLE=aarch64-linux-gnu- \
             CROSS_COMPILE=$GCC64_PATH/bin/aarch64-elf- \
             CROSS_COMPILE_ARM32=$GCC32_PATH/bin/arm-eabi- \
-            Image.gz dtbs
+            Image.gz dtbs 2>&1 | tee build.log
+
+          KSU_NAME=$(awk -F': ' '/-- BakaSU version name:/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' build.log)
+          KSU_CODE=$(awk -F': ' '/-- BakaSU version code:/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' build.log)
+          SUSFS_VER=$(awk -F': ' '/-- SUSFS_VERSION:/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' build.log)
+          NOMOUNT_VER=$(awk -F'"' '/NOMOUNT_BASE_VERSION/ {print $2; exit}' fs/nomount/nomount.h)
+          KERNEL_VERSION=$(make -s O=out ARCH=arm64 kernelrelease)
+          CLANG_VERSION=$(clang --version | head -n 1)
+
+          echo "KSU_NAME=${KSU_NAME:-unknown}" >> "$GITHUB_ENV"
+          echo "KSU_CODE=${KSU_CODE:-unknown}" >> "$GITHUB_ENV"
+          echo "SUSFS_VER=${SUSFS_VER:-unknown}" >> "$GITHUB_ENV"
+          echo "NOMOUNT_VER=${NOMOUNT_VER:-unknown}" >> "$GITHUB_ENV"
+          echo "KERNEL_VERSION=${KERNEL_VERSION:-unknown}" >> "$GITHUB_ENV"
+          echo "CLANG_VERSION=${CLANG_VERSION:-unknown}" >> "$GITHUB_ENV"
 
       - name: Package with AnyKernel3
         id: package
         run: |
-          ZIP_NAME="PixelOS-sweet-KernelSU-Next-SuSFS-NoMount-${{ needs.check.outputs.build_time }}.zip"
+          ZIP_NAME="PixelOS-sweet-BakaSU-SuSFS-NoMount-${{ needs.check.outputs.build_time }}.zip"
 
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3.git anykernel
           cp anykernel_template/anykernel.sh anykernel/anykernel.sh
@@ -147,19 +166,13 @@ jobs:
           zip -r "../$ZIP_NAME" * -x .git README.md *placeholder
           cd ..
 
-          SHA_VAL=$(sha256sum "$ZIP_NAME" | awk '{print $1}')
-          echo "$SHA_VAL  $ZIP_NAME" > "${ZIP_NAME}.sha256"
-
           echo "zip_name=${ZIP_NAME}" >> $GITHUB_OUTPUT
-          echo "sha256=${SHA_VAL}" >> $GITHUB_OUTPUT
 
       - name: Upload Build Artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ steps.package.outputs.zip_name }}
-          path: |
-            ${{ steps.package.outputs.zip_name }}
-            ${{ steps.package.outputs.zip_name }}.sha256
+          path: ${{ steps.package.outputs.zip_name }}
 
       - name: Publish GitHub Release
         env:
@@ -168,12 +181,20 @@ jobs:
           ZIP_NAME: ${{ steps.package.outputs.zip_name }}
           KERNEL_HEAD: ${{ needs.check.outputs.kernel_head }}
         run: |
-          NOTES=$(printf "KernelSU-Next + SuSFS + NoMount automated build for Redmi Note 10 Pro (sweet)\n- Base: PixelOS seventeen (Android 17)\n- Upstream: PixelOS-Devices/android_kernel_xiaomi_sm6150@%s\n- Kernel Version: 4.14.357-openela-VantomKernel\n- Root: KernelSU-Next (legacy-susfs)\n- Root Hiding: SuSFS v1.5.5 (kernel-4.14)\n- VFS Injection: NoMount (CONFIG_NOMOUNT=y)\n- Compiler: ZyCromerZ Clang 17.0.0" "$KERNEL_HEAD")
+          NOTES=$(printf "BakaSU + SuSFS + NoMount build for Redmi Note 10 Pro (sweet)\n\n- ROM: PixelOS seventeen (Android 17)\n- Kernel source: PixelOS-Devices/android_kernel_xiaomi_sm6150@%s\n- Kernel version: %s\n- BakaSU: %s (version code %s)\n- SuSFS: %s (kernel-4.14 backport, inline hook)\n- NoMount: %s\n- Toolchain: %s" \
+            "$KERNEL_HEAD" "$KERNEL_VERSION" "$KSU_NAME" "$KSU_CODE" \
+            "$SUSFS_VER" "$NOMOUNT_VER" "$CLANG_VERSION")
 
           if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$ZIP_NAME" "${ZIP_NAME}.sha256" --clobber
+            # Remove legacy checksum assets from this tag when rerunning it.
+            while IFS= read -r asset; do
+              [ -n "$asset" ] || continue
+              gh release delete-asset "$TAG" "$asset" --yes
+            done < <(gh release view "$TAG" --json assets --jq '.assets[].name | select(endswith(".sha256"))')
+            gh release upload "$TAG" "$ZIP_NAME" --clobber
+            gh release edit "$TAG" --notes "$NOTES"
           else
-            gh release create "$TAG" "$ZIP_NAME" "${ZIP_NAME}.sha256" \
+            gh release create "$TAG" "$ZIP_NAME" \
               --title "$TAG" \
               --notes "$NOTES"
           fi
@@ -194,7 +215,6 @@ jobs:
           RELEASE_TAG: ${{ needs.check.outputs.release_tag }}
           KERNEL_HEAD: ${{ needs.check.outputs.kernel_head }}
           ZIP_NAME: ${{ needs.build.outputs.zip_name }}
-          SHA256: ${{ needs.build.outputs.sha256 }}
         run: |
           if [ -z "$BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then
             echo "Telegram credentials not configured. Skipping."
@@ -202,7 +222,7 @@ jobs:
           fi
 
           if [ "$BUILD_STATUS" = "success" ]; then
-            MSG="<b>Kernel Build Succeeded</b>%0A<b>Device:</b> Redmi Note 10 Pro (sweet)%0A<b>Base:</b> PixelOS seventeen (Android 17)%0A<b>Commit:</b> <code>${KERNEL_HEAD}</code>%0A<b>Features:</b> KernelSU-Next + SuSFS + NoMount%0A<b>Package:</b> <code>${ZIP_NAME}</code>%0A<b>SHA-256:</b> <code>${SHA256}</code>%0A<b>Release:</b> <a href=\"${RELEASE_URL}\">${RELEASE_TAG}</a>%0A<a href=\"${RUN_URL}\">View GitHub Run</a>"
+            MSG="<b>Kernel Build Succeeded</b>%0A<b>Device:</b> Redmi Note 10 Pro (sweet)%0A<b>Base:</b> PixelOS seventeen (Android 17)%0A<b>Commit:</b> <code>${KERNEL_HEAD}</code>%0A<b>Features:</b> BakaSU + SuSFS + NoMount%0A<b>Package:</b> <code>${ZIP_NAME}</code>%0A<b>Release:</b> <a href=\"${RELEASE_URL}\">${RELEASE_TAG}</a>%0A<a href=\"${RUN_URL}\">View GitHub Run</a>"
           else
             MSG="<b>Kernel Build Failed</b>%0A<b>Device:</b> Redmi Note 10 Pro (sweet)%0A<b>Base:</b> PixelOS seventeen%0A<b>Status:</b> ${BUILD_STATUS}%0A<a href=\"${RUN_URL}\">View Error Log</a>"
           fi

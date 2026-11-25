@@ -16,29 +16,29 @@ def run_cmd(cmd, cwd="."):
     return True, res.stdout
 
 def main():
-    parser = argparse.ArgumentParser(description="Patch SuSFS, NoMount and KernelSU-Next into kernel tree")
-    parser.add_argument("--ksu-repo", default="https://github.com/xtrance-eng/KernelSU-Next.git", help="KernelSU-Next git repo")
-    parser.add_argument("--ksu-branch", default="legacy-susfs", help="KernelSU-Next git branch")
+    parser = argparse.ArgumentParser(description="Integrate BakaSU, SuSFS and NoMount into the sweet kernel tree")
+    parser.add_argument("--ksu-repo", default="https://github.com/Baka-SU/BakaSU.git", help="BakaSU git repo")
+    parser.add_argument("--ksu-branch", default="main", help="BakaSU git branch or tag")
     args = parser.parse_args()
 
     kernel_dir = os.getcwd()
     log(f"Starting patch pipeline in: {kernel_dir}")
 
     # ----------------------------------------------------
-    # 1. Setup KernelSU-Next
+    # 1. Setup BakaSU
     # ----------------------------------------------------
-    log(f"Setting up KernelSU-Next from {args.ksu_repo} (branch: {args.ksu_branch})...")
-    ksu_dir = os.path.join(kernel_dir, "KernelSU-Next")
+    log(f"Setting up BakaSU from {args.ksu_repo} (branch: {args.ksu_branch})...")
+    ksu_dir = os.path.join(kernel_dir, "KernelSU")
     if not os.path.exists(ksu_dir):
-        ok, out = run_cmd(f"git clone --depth=1 -b {args.ksu_branch} {args.ksu_repo} KernelSU-Next")
+        ok, out = run_cmd(f"git clone --depth=1 -b {args.ksu_branch} {args.ksu_repo} KernelSU")
         if not ok:
-            log("Failed to clone KernelSU-Next")
+            log("Failed to clone BakaSU")
             return 1
 
     drivers_dir = os.path.join(kernel_dir, "drivers")
     ksu_symlink = os.path.join(drivers_dir, "kernelsu")
     if not os.path.exists(ksu_symlink):
-        os.symlink("../KernelSU-Next/kernel", ksu_symlink)
+        os.symlink("../KernelSU/kernel", ksu_symlink)
         log("Created drivers/kernelsu symlink")
 
     d_makefile = os.path.join(drivers_dir, "Makefile")
@@ -130,7 +130,7 @@ def main():
         with open(susfs_def_header, "r") as f:
             def_text = f.read()
         compat_def_ext = """
-/* Compatibility extensions for KernelSU-Next legacy */
+/* Compatibility extensions for BakaSU SUSFS integration */
 #ifndef SUSFS_MAGIC
 #define SUSFS_MAGIC 0xFAFAFAFA
 #endif
@@ -183,7 +183,7 @@ static inline bool susfs_is_current_proc_umounted(void) {
         with open(susfs_header, "r") as f:
             h_text = f.read()
         compat_ext = """
-/* Compatibility extensions for KernelSU-Next legacy */
+/* Compatibility extensions for BakaSU SUSFS integration */
 #include <linux/uaccess.h>
 #include <linux/slab.h>
 
@@ -299,7 +299,7 @@ static inline void susfs_enable_log(void __user *arg) {}
 
     # 3. Patch supercall.c: remove conflicting dummy susfs_try_umount and dereference *arg
     for sc_candidate in [
-        os.path.join(kernel_dir, "KernelSU-Next", "kernel", "supercall", "supercall.c"),
+        os.path.join(kernel_dir, "KernelSU", "kernel", "supercall", "supercall.c"),
         os.path.join(kernel_dir, "drivers", "kernelsu", "supercall", "supercall.c")
     ]:
         if os.path.exists(sc_candidate):
@@ -326,7 +326,7 @@ static inline void susfs_enable_log(void __user *arg) {}
 
     # 4. Patch kernel_umount.c: bridge ksu_try_umount, susfs_try_umount_all, susfs_run_sus_path_loop
     for um_candidate in [
-        os.path.join(kernel_dir, "KernelSU-Next", "kernel", "feature", "kernel_umount.c"),
+        os.path.join(kernel_dir, "KernelSU", "kernel", "feature", "kernel_umount.c"),
         os.path.join(kernel_dir, "drivers", "kernelsu", "feature", "kernel_umount.c")
     ]:
         if os.path.exists(um_candidate):
@@ -481,7 +481,7 @@ int path_umount(struct path *path, int flags)
 
     # Fix sulog/event.c timespec mismatch if present
     for sulog_candidate in [
-        os.path.join(kernel_dir, "KernelSU-Next", "kernel", "sulog", "event.c"),
+        os.path.join(kernel_dir, "KernelSU", "kernel", "sulog", "event.c"),
         os.path.join(kernel_dir, "drivers", "kernelsu", "sulog", "event.c")
     ]:
         if os.path.exists(sulog_candidate):
@@ -500,13 +500,9 @@ int path_umount(struct path *path, int flags)
     if os.path.exists(defconfig_path):
         with open(defconfig_path, "a") as f:
             f.write("""
-# KernelSU-Next
+# BakaSU (SUSFS Inline Hook mode)
 CONFIG_KSU=y
-CONFIG_KPROBES=y
-CONFIG_HAVE_KPROBES=y
-CONFIG_KRETPROBES=y
-CONFIG_HAVE_KRETPROBES=y
-CONFIG_KSU_KPROBES_HOOK=y
+CONFIG_KSU_SUSFS=y
 
 # SuSFS 4.14
 CONFIG_KSU_SUSFS=y
@@ -526,7 +522,7 @@ CONFIG_KSU_SUSFS_SUS_MAP=y
 # NoMount
 CONFIG_NOMOUNT=y
 """)
-        log("Appended KSU, SuSFS, and NoMount configs to sweet_defconfig")
+        log("Appended BakaSU, SuSFS, and NoMount configs to sweet_defconfig")
 
     log("Kernel tree patching completed successfully!")
     return 0

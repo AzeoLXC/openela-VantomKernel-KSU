@@ -4,14 +4,14 @@
 ### AnyKernel setup
 # global properties
 properties() { '
-kernel.string=PixelOS sweet Kernel with KernelSU-Next
+kernel.string=PixelOS sweet Kernel with BakaSU
 do.devicecheck=1
 do.modules=0
 do.systemless=1
 do.cleanup=1
 do.cleanuponabort=0
 device.name1=sweet
-device.name2=sweetin
+device.name2=
 device.name3=
 device.name4=
 device.name5=
