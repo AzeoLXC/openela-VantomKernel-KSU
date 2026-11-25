@@ -102,6 +102,7 @@ jobs:
 
           scripts/config --file out/.config \
             -e CONFIG_KSU \
+            -e CONFIG_KALLSYMS_ALL \
             -e CONFIG_KPROBES \
             -e CONFIG_KRETPROBES \
             -e CONFIG_KSU_SUSFS \
@@ -130,6 +131,10 @@ jobs:
             -d CONFIG_PROFILING
 
           make O=out ARCH=arm64 olddefconfig
+          grep -q '^CONFIG_KALLSYMS_ALL=y$' out/.config || {
+            echo "CONFIG_KALLSYMS_ALL was not enabled; BakaSU static symbol checks cannot pass."
+            exit 1
+          }
 
           make -j$(nproc --all) O=out ARCH=arm64 \
             LLVM=1 \
