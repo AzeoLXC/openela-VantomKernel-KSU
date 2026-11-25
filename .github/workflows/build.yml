@@ -102,6 +102,8 @@ jobs:
 
           scripts/config --file out/.config \
             -e CONFIG_KSU \
+            -e CONFIG_DEBUG_KERNEL \
+            -e CONFIG_KALLSYMS \
             -e CONFIG_KALLSYMS_ALL \
             -e CONFIG_KPROBES \
             -e CONFIG_KRETPROBES \
