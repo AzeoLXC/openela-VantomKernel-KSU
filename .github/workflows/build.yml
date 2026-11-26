@@ -154,7 +154,8 @@ jobs:
           KSU_CODE=$(awk -F': ' '/-- BakaSU version code:/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' build.log)
           SUSFS_VER=$(awk -F': ' '/-- SUSFS_VERSION:/ {gsub(/[[:space:]]/, "", $2); print $2; exit}' build.log)
           NOMOUNT_VER=$(awk -F'"' '/NOMOUNT_BASE_VERSION/ {print $2; exit}' fs/nomount/nomount.h)
-          KERNEL_VERSION=$(make -s O=out ARCH=arm64 kernelrelease)
+          test -s out/include/config/kernel.release
+          KERNEL_VERSION=$(cat out/include/config/kernel.release)
           CLANG_VERSION=$(clang --version | head -n 1)
 
           echo "KSU_NAME=${KSU_NAME:-unknown}" >> "$GITHUB_ENV"
