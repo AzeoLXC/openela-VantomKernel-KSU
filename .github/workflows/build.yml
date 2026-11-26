@@ -158,7 +158,8 @@ jobs:
           NOMOUNT_VER=$(awk -F'"' '/NOMOUNT_BASE_VERSION/ {print $2; exit}' fs/nomount/nomount.h)
           test -s out/include/config/kernel.release
           KERNEL_VERSION=$(cat out/include/config/kernel.release)
-          CLANG_VERSION=$(clang --version | head -n 1)
+          CLANG_VERSION=$(clang --version | sed -nE 's/.*clang version ([^ ]+).*/\1/p' | head -n 1)
+          CLANG_COMMIT=$(clang --version | sed -nE 's/.*llvm-project(\.git)? ([0-9a-f]{40}).*/\2/p' | head -n 1)
 
           echo "KSU_NAME=${KSU_NAME:-unknown}" >> "$GITHUB_ENV"
           echo "KSU_CODE=${KSU_CODE:-unknown}" >> "$GITHUB_ENV"
@@ -166,6 +167,7 @@ jobs:
           echo "NOMOUNT_VER=${NOMOUNT_VER:-unknown}" >> "$GITHUB_ENV"
           echo "KERNEL_VERSION=${KERNEL_VERSION:-unknown}" >> "$GITHUB_ENV"
           echo "CLANG_VERSION=${CLANG_VERSION:-unknown}" >> "$GITHUB_ENV"
+          echo "CLANG_COMMIT=${CLANG_COMMIT:-unknown}" >> "$GITHUB_ENV"
 
       - name: Package with AnyKernel3
         id: package
@@ -195,9 +197,15 @@ jobs:
           ZIP_NAME: ${{ steps.package.outputs.zip_name }}
           KERNEL_HEAD: ${{ needs.check.outputs.kernel_head }}
         run: |
-          NOTES=$(printf "BakaSU + SuSFS + NoMount build for Redmi Note 10 Pro (sweet)\n\n- ROM: PixelOS seventeen (Android 17)\n- Kernel source: PixelOS-Devices/android_kernel_xiaomi_sm6150@%s\n- Kernel version: %s\n- BakaSU: %s (version code %s)\n- SuSFS: %s (kernel-4.14 backport, inline hook)\n- NoMount: %s\n- Toolchain: %s" \
-            "$KERNEL_HEAD" "$KERNEL_VERSION" "$KSU_NAME" "$KSU_CODE" \
-            "$SUSFS_VER" "$NOMOUNT_VER" "$CLANG_VERSION")
+          if [[ "$CLANG_COMMIT" =~ ^[0-9a-f]{40}$ ]]; then
+            TOOLCHAIN="ZyC Clang ${CLANG_VERSION} ([llvm-project@${CLANG_COMMIT:0:7}](https://github.com/llvm/llvm-project/commit/${CLANG_COMMIT}))"
+          else
+            TOOLCHAIN="ZyC Clang ${CLANG_VERSION} (LLVM commit unavailable)"
+          fi
+          KERNEL_SHORT="${KERNEL_HEAD:0:7}"
+          NOTES=$(printf "BakaSU + SuSFS + NoMount build for Redmi Note 10 Pro (sweet)\n\n- ROM: PixelOS seventeen (Android 17)\n- Kernel source: [PixelOS-Devices/android_kernel_xiaomi_sm6150@%s](https://github.com/PixelOS-Devices/android_kernel_xiaomi_sm6150/commit/%s)\n- Kernel version: %s\n- BakaSU: %s (version code %s)\n- SuSFS: %s (kernel-4.14 backport, inline hook)\n- NoMount: %s\n- Toolchain: %s" \
+            "$KERNEL_SHORT" "$KERNEL_HEAD" "$KERNEL_VERSION" "$KSU_NAME" "$KSU_CODE" \
+            "$SUSFS_VER" "$NOMOUNT_VER" "$TOOLCHAIN")
 
           if gh release view "$TAG" >/dev/null 2>&1; then
             # Remove legacy checksum assets from this tag when rerunning it.
